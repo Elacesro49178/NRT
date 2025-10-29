@@ -1,0 +1,307 @@
+#!/usr/bin/env perl
+
+# Original file Copyright 2013-2015, Derrick Wood <dwood@cs.jhu.edu>
+# Portions (c) 2017, Florian Breitwieser <fbreitwieser@jhu.edu> as part of KrakenUniq
+#
+# This file is part of the Kraken taxonomic sequence classification system.
+#
+# Kraken is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Kraken is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Kraken.  If not, see <http://www.gnu.org/licenses/>.
+
+# Wrapper for Kraken's classifier
+
+use strict;
+use warnings;
+use File::Basename;
+use File::Path;
+use Getopt::Long;
+use POSIX qw/strftime/;
+use Cwd;
+use File::Path qw/make_path/;
+
+my $PROG = basename $0;
+my $KRAKEN_DIR = "#####=KRAKEN_DIR=#####";
+# generate random prefix
+my @set = ('0' ..'9', 'A' .. 'F');
+my $random_prefix = join("",map($set[rand @set],1..8));
+
+# Test to see if the executables got moved, try to recover if we can
+if (! -e "$KRAKEN_DIR/classify") {
+  use Cwd 'abs_path';
+  $KRAKEN_DIR = dirname abs_path($0);
+}
+
+require "$KRAKEN_DIR/krakenlib.pm";
+$ENV{"KRAKEN_DIR"} = $KRAKEN_DIR;
+$ENV{"PATH"} = "$KRAKEN_DIR:$ENV{PATH}";
+
+my $CLASSIFY = "$KRAKEN_DIR/classify";
+my $CLASSIFY_EXACT = "$KRAKEN_DIR/classifyExact";
+my $CREATE_TAXDB = "$KRAKEN_DIR/build_taxdb";
+my $READ_MERGER = "$KRAKEN_DIR/read_merger.pl";
+
+my $quick = 0;
+my $min_hits = 1;
+my $fasta_input = 0;
+my $fastq_input = 0;
+my @db_prefix;
+my $threads;
+my $preload = 0;
+my $preload_size;
+my $gunzip = 0;
+my $bunzip2 = 0;
+my $paired = 0;
+my $check_names = 0;
+my $only_classified_output = 0;
+my $unclassified_out;
+my $classified_out;
+my $outfile;
+my $report_file;
+my $print_sequence = 0;
+my $uid_mapping = 0;
+my $hll_precision = 12;
+my $use_exact_counting = 0;
+my @cmdline = @ARGV;
+
+GetOptions(
+  "help" => \&display_help,
+  "version" => \&display_version,
+  "db=s" => \@db_prefix,
+  "threads=i" => \$threads,
+  "fasta-input" => \$fasta_input,
+  "fastq-input" => \$fastq_input,
+  "quick" => \$quick,
+  "min-hits=i" => \$min_hits,
+  "unclassified-out=s" => \$unclassified_out,
+  "classified-out=s" => \$classified_out,
+  "print-sequence=s" => \$print_sequence,
+  "o|output=s" => \$outfile,
+  "report-file=s" => \$report_file,
+  "preload" => \$preload,
+  "preload-size=s" => \$preload_size,
+  "paired" => \$paired,
+  "hll-precision=i", \$hll_precision,
+  "exact", \$use_exact_counting,
+  "check-names" => \$check_names,
+  "gzip-compressed" => \$gunzip,
+  "bzip2-compressed" => \$bunzip2,
+  "uid-mapping" => \$uid_mapping,
+  "only-classified-output" => \$only_classified_output,
+) or die $!;
+
+if (! defined $threads) {
+  $threads = $ENV{"KRAKEN_NUM_THREADS"} || 1;
+}
+
+if (! @ARGV && !$preload) {
+  print STDERR "Need to specify input filenames!\n";
+  usage();
+}
+
+if (!defined $report_file && !$preload && ! @ARGV) {
+  print STDERR "Need to specify a report file with --report-file! Set to 'off' to suppress report generation.
+See --help for more details.\n";
+  exit 1;
+}
+
+
+if (scalar(@db_prefix) == 0) {
+  print STDERR "Need to specify a database with --db!
+See --help for more details.\n";
+  exit 1;
+}
+
+if (scalar(@db_prefix) > 1 && defined($preload_size) ) {
+  print STDERR "--preload size option can only be used with a single input database! 
+See --help for more details.\n";
+  exit 1;
+}
+
+eval { @db_prefix = map { krakenlib::find_db($_) } @db_prefix };
+if ($@) {
+  die "$PROG: $@";
+}
+
+my $database = $uid_mapping? "uid_database.kdb" : "database.kdb";
+my @kdb_files = map { "$_/$database" } @db_prefix;
+
+my @idx_files = map { "$_/database.idx" } @db_prefix;
+
+foreach my $file (@kdb_files,@idx_files) {
+  die "$PROG: $file does not exist!\n" if (! -e $file);
+}
+
+if (scalar(@db_prefix) > 1) {
+  my $taxdb1_size = (stat $db_prefix[0]."/taxDB")[7];
+  for (my $i = 1; $i < scalar(@db_prefix); ++$i) {
+    my $taxdb2_size = (stat $db_prefix[$i]."/taxDB")[7];
+    if ($taxdb1_size !=  $taxdb2_size) {
+      print STDERR "You need identical taxonomies for hierachical mapping!\n";
+      print STDERR "$db_prefix[0]/taxDB differs from $db_prefix[$i]/taxDB.\n";
+      exit 1;
+    }
+  }
+}
+
+if ($min_hits > 1 && ! $quick) {
+  die "$PROG: --min_hits requires --quick to be specified\n";
+}
+
+if ($paired && @ARGV != 2) {
+  die "$PROG: --paired requires exactly two filenames\n";
+}
+
+if ($gunzip || $bunzip2) {
+  print STDERR "NOTE: No need to use --gzip-compressed or --bzip2-compressed anymore, format is detected automatically.\n";
+}
+if ($fasta_input || $fastq_input) {
+  print STDERR "NOTE: No need to use --fasta-input or --fastq-input anymore, format is detected automatically.\n";
+}
+
+if (defined $report_file && !-d dirname($report_file)) {
+  print STDERR "Creating directory for $report_file.\n";
+  make_path(dirname($report_file));
+}
+
+if (defined $report_file && -s $report_file) {
+  print STDERR "Warning: Overwriting $report_file.\n";
+}
+
+my $now = time();
+my $date = strftime('%Y-%m-%dT%H:%M:%SZ', gmtime($now));
+my $wd = getcwd;
+my $db_size = -s $kdb_files[0];
+
+# set flags for classifier
+my @flags;
+push @flags, map { ("-d", $_) } @kdb_files;
+push @flags, map { ("-i", $_) } @idx_files;
+push @flags, "-t", $threads if $threads > 1;
+push @flags, "-q" if $quick;
+push @flags, "-m", $min_hits if $min_hits > 1;
+push @flags, "-U", $unclassified_out if defined $unclassified_out;
+push @flags, "-C", $classified_out if defined $classified_out;
+push @flags, "-o", $outfile if defined $outfile;
+push @flags, "-c", if $only_classified_output;
+push @flags, "-M" if $preload;
+push @flags, "-x", $preload_size if defined $preload_size;
+push @flags, "-r", $report_file if defined $report_file;
+push @flags, "-a", $db_prefix[0]."/taxDB";
+push @flags, "-s" if $print_sequence;
+push @flags, "-p", $hll_precision;
+if ($uid_mapping) {
+  my $uid_mapping_file = "$db_prefix[0]/uid_to_taxid.map";
+  if (!-f $uid_mapping_file) {
+    print STDERR "Missing required file $uid_mapping_file for UID mapping.\n";
+    exit(1); 
+  }
+  push @flags, "-I", $uid_mapping_file; 
+} else {
+
+}
+
+if (! -f $db_prefix[0]."/taxDB") {
+  print STDERR "Taxonomy database not at ".$db_prefix[0]."/taxDB - creating it ...";
+  die "$db_prefix[0]/taxonomy/nodes.dmp does not exist!" unless  -f $db_prefix[0]."/taxonomy/nodes.dmp";
+  die "$db_prefix[0]/taxonomy/names.dmp does not exist!" unless  -f $db_prefix[0]."/taxonomy/names.dmp";
+
+  my $cmd = "$CREATE_TAXDB $db_prefix[0]/taxonomy/names.dmp $db_prefix[0]/taxonomy/nodes.dmp > $db_prefix[0]/taxDB";
+  print STDERR "$cmd\n";
+  system $cmd;
+}
+
+my $DIR="./";
+if(defined($outfile)){
+  $DIR=dirname($outfile);
+} elsif (defined($report_file)){
+  $DIR=dirname($report_file);
+}
+# pipe input to classify no longer supported or allowed
+if ($paired) {
+  my $cmd="perl $READ_MERGER ";
+  $cmd.=" --check-names " if $check_names;
+  $cmd.=join(" ",@ARGV);
+  $cmd.=" 1>$DIR/$random_prefix.merged.fa 2>$DIR/$random_prefix.merged.err";
+  system($cmd);
+  @ARGV=();
+  push(@ARGV,"$DIR/$random_prefix.merged.fa");
+}
+
+my $cmd = $use_exact_counting? $CLASSIFY_EXACT : $CLASSIFY;
+print STDERR "$cmd @flags\n";
+if (defined $report_file) {
+    my $mycmd = join(' ', $0, @cmdline);
+    open(my $RF, ">", $report_file) or die "Could not open report file for writing";
+    print $RF "# KrakenUniq v#####=VERSION=##### DATE:$date DB:@db_prefix DB_SIZE:$db_size WD:$wd\n# CL:$mycmd\n";
+    close($RF)
+}
+system("$cmd @flags @ARGV");
+#die "$PROG: exec error: $!\n";
+if ($paired) {
+  unlink("$DIR/$random_prefix.merged.fa");
+  unlink("$DIR/$random_prefix.merged.err");
+}
+
+sub usage {
+  my $exit_code = @_ ? shift : 64;
+  my $default_db = "none";
+  eval { $default_db = '"' . krakenlib::find_db() . '"'; };
+  my $def_thread_ct = exists $ENV{"KRAKEN_NUM_THREADS"} ? (0 + $ENV{"KRAKEN_NUM_THREADS"}) : 1;
+  print STDERR <<EOF;
+Usage: $PROG --report-file FILENAME [options] <filename(s)>
+
+Options:
+  --db NAME               Name for Kraken DB (default: $default_db)
+  --threads NUM           Number of threads (default: $def_thread_ct)
+  --hll-precision INT     Precision for HyperLogLog k-mer cardinality estimation, between 10 and 18 (default: $hll_precision)
+  --exact                 Compute exact cardinality instead of estimate (slower, requires memory proportional to cardinality!)
+  --quick                 Quick operation (use first hit or hits)
+  --min-hits NUM          In quick op., number of hits req'd for classification
+                          NOTE: this is ignored if --quick is not specified
+  --unclassified-out FILENAME
+                          Print unclassified sequences to filename
+  --classified-out FILENAME
+                          Print classified sequences to filename
+  --output FILENAME       Print output to filename (default: stdout); "off" will
+                          suppress normal output
+  --only-classified-output
+                          Print no Kraken output for unclassified sequences
+  --preload               Loads the entire DB into memory before classification
+  --preload-size SIZE     Loads DB into memory in chunks of SIZE, e.g. 500M or 7G (if RAM is small), overrides --preload flag.  Can only be used with a single input database.
+  --paired                The two filenames provided are paired-end reads
+  --check-names           Ensure each pair of reads have names that agree
+                          with each other; ignored if --paired is not specified
+  --help                  Print this message
+  --version               Print version information
+
+Experimental:
+  --uid-mapping           Map using UID database
+
+The file format (fasta/fastq) and compression (gzip/bzip2) do not need to be specified anymore.
+The format is detected automatically.
+
+EOF
+  exit $exit_code;
+}
+
+sub display_help {
+  usage(0);
+}
+
+sub display_version {
+  print "KrakenUniq version #####=VERSION=#####\n";
+  print "Copyright 2017-2018, Florian Breitwieser (fbreitwieser\@jhu.edu)\n";
+  print "Copyright 2013-2017, Derrick Wood (dwood\@cs.jhu.edu) for Kraken\n";
+  exit 0;
+}
+ 
