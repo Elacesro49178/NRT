@@ -38,4 +38,4 @@ for my $hll_t (@ARGV) {
 		my $mem_k = `grep '$mem' $k_t | sed 's/.* //'`; chomp $mem_k;
 		print $mem_k,"\n";
 }
-E
+Eª

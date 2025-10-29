@@ -351,4 +351,4 @@ echo "Database construction complete. [Total: $(report_time_elapsed $start_time)
 You can delete all files but database.{kdb,idx} and taxDB now, if you want"
 
 
-z
+zg

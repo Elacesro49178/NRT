@@ -23,4 +23,4 @@ for i in fungi protozoa viral viral-neighbors archaea bacteria; do
   [[ -f "$DIR/data/library/$i-dusted/all-$i-dusted.fna" ]] || ln "$DUSTED_F" "$DIR/data/library/$i-dusted/all-$i-dusted.fna"
   [[ -f "$DIR/data/library/$i-dusted/all-$i.map" ]] || ln "$DIR/data/all-$i.map" "$DIR/data/library/$i-dusted/all-$i.map"
 done
-
+ñ

@@ -118,4 +118,4 @@ for VAR in $@; do
   esac
 done
 
-¨
+¨ê
