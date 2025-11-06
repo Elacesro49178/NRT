@@ -49,4 +49,4 @@ else
   exit 1
 fi
 echo $JELLYFISH1_BIN
-¬þ
+¬þd

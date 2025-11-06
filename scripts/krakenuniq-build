@@ -404,4 +404,4 @@ sub clean_database {
 sub upgrade_database {
   exec "upgrade_db.sh";
 }
-w2
+w2û

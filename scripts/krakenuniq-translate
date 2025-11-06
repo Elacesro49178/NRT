@@ -144,4 +144,4 @@ sub load_taxonomy {
 }
 
 # vim: tabstop=8 expandtab tabstop=2 shiftwidth=2 :
-m
+mp

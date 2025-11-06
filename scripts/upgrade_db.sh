@@ -83,4 +83,4 @@ mv newdb.kdb database.kdb
 
 echo "Database upgrade complete. [$(report_time_elapsed $start_time)]"
 echo "Old database files are at $KRAKEN_DB_NAME/old_database.{kdb,idx}"
-K…
+K…=

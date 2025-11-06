@@ -50,4 +50,4 @@ db_sort -M -t $KRAKEN_THREAD_CT -n $KRAKEN_MINIMIZER_LEN \
   -i "$NEW_DB_DIR/database.idx"
 mv "$NEW_DB_DIR/database.kdb.tmp" "$NEW_DB_DIR/database.kdb"
 echo "Sort complete, database is ready."
-¦‘
+¦‘\

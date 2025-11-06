@@ -304,4 +304,4 @@ sub display_version {
   print "Copyright 2013-2017, Derrick Wood (dwood\@cs.jhu.edu) for Kraken\n";
   exit 0;
 }
- ô
+ ô’
